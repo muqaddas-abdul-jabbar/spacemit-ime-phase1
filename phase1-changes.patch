@@ -1,0 +1,765 @@
+diff --git a/clang/include/clang/Basic/CMakeLists.txt b/clang/include/clang/Basic/CMakeLists.txt
+index a328abf92797..3bfe99eb1208 100644
+--- a/clang/include/clang/Basic/CMakeLists.txt
++++ b/clang/include/clang/Basic/CMakeLists.txt
+@@ -251,6 +251,15 @@ clang_tablegen(riscv_sifive_vector_builtin_cg.inc -gen-riscv-sifive-vector-built
+ clang_tablegen(riscv_sifive_vector_builtin_sema.inc -gen-riscv-sifive-vector-builtin-sema
+   SOURCE riscv_sifive_vector.td
+   TARGET ClangRISCVSiFiveVectorBuiltinSema)
++clang_tablegen(riscv_spacemit_vector_builtins.inc -gen-riscv-spacemit-vector-builtins
++  SOURCE riscv_spacemit_vector.td
++  TARGET ClangRISCVSpacemitVectorBuiltins)
++clang_tablegen(riscv_spacemit_vector_builtin_cg.inc -gen-riscv-spacemit-vector-builtin-codegen
++  SOURCE riscv_spacemit_vector.td
++  TARGET ClangRISCVSpacemitVectorBuiltinCG)
++clang_tablegen(riscv_spacemit_vector_builtin_sema.inc -gen-riscv-spacemit-vector-builtin-sema
++  SOURCE riscv_spacemit_vector.td
++  TARGET ClangRISCVSpacemitVectorBuiltinSema)
+ clang_tablegen(riscv_andes_vector_builtins.inc -gen-riscv-andes-vector-builtins
+   SOURCE riscv_andes_vector.td
+   TARGET ClangRISCVAndesVectorBuiltins)
+diff --git a/clang/include/clang/Basic/TargetBuiltins.h b/clang/include/clang/Basic/TargetBuiltins.h
+index f069b7e52d13..f2783dc57b9b 100644
+--- a/clang/include/clang/Basic/TargetBuiltins.h
++++ b/clang/include/clang/Basic/TargetBuiltins.h
+@@ -212,6 +212,9 @@ namespace clang {
+     FirstAndesBuiltin,
+     LastSiFiveBuiltin = FirstAndesBuiltin - 1,
+ #include "clang/Basic/riscv_andes_vector_builtins.inc"
++    FirstSpacemitBuiltin,
++    LastAndesBuiltin = FirstSpacemitBuiltin - 1,
++#include "clang/Basic/riscv_spacemit_vector_builtins.inc"
+ #undef GET_RISCVV_BUILTIN_ENUMERATORS
+     FirstTSBuiltin,
+   };
+diff --git a/clang/include/clang/Basic/riscv_spacemit_vector.td b/clang/include/clang/Basic/riscv_spacemit_vector.td
+new file mode 100644
+index 000000000000..03d0b0887cf0
+--- /dev/null
++++ b/clang/include/clang/Basic/riscv_spacemit_vector.td
+@@ -0,0 +1,49 @@
++//===--- riscv_spacemit_vector.td - RISC-V SpacemiT Builtin function list ===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file defines the builtins for the RISC-V SpacemiT Vector Dot Product
++// Extension (XSMTVDot). See:
++//
++// https://github.com/spacemit-com/riscv-ime-extension-spec/releases/tag/v1.0
++//
++//===----------------------------------------------------------------------===//
++
++include "riscv_vector_common.td"
++
++//===----------------------------------------------------------------------===//
++// SpacemiT Vector Dot Product Extension (XSMTVDot)
++//
++// smt_vmadot   vd, vs1, vs2 ; int8 x int8   -> int32 (signed x signed)
++// smt_vmadotu  vd, vs1, vs2 ; uint8 x uint8 -> int32 (unsigned x unsigned)
++// smt_vmadotsu vd, vs1, vs2 ; int8 x uint8  -> int32 (signed x unsigned)
++// smt_vmadotus vd, vs1, vs2 ; uint8 x int8  -> int32 (unsigned x signed)
++//
++// Hardware note: vd (accumulator) physically occupies a register PAIR
++// (VRM2, i.e. LMUL=2 relative to vs1/vs2's LMUL=1 VR), not a same-LMUL
++// widened element count. We force this with (LFixedLog2LMUL:1) on the
++// accumulator/return type, while vs1/vs2 use (FixedSEW:8) to become int8
++// at the base (LMUL=1) register class.
++//===----------------------------------------------------------------------===//
++multiclass RVVIMEDOT<list<list<string>> suffixes_prototypes> {
++  let RequiredFeatures = ["xsmtvdot"],
++      UnMaskedPolicyScheme = HasPolicyOperand,
++      HasMaskedOffOperand = false,
++      Log2LMUL = [0],
++      OverloadedName = NAME in {
++    defm NAME : RVVOutOp1Op2BuiltinSet<NAME, "i", suffixes_prototypes>;
++  }
++}
++
++defm smt_vmadot   : RVVIMEDOT<[["vv", "v",
++    "(LFixedLog2LMUL:1)v(LFixedLog2LMUL:1)v(FixedSEW:8)v(FixedSEW:8)v"]]>;
++defm smt_vmadotu  : RVVIMEDOT<[["vv", "v",
++    "(LFixedLog2LMUL:1)v(LFixedLog2LMUL:1)v(FixedSEW:8)Uv(FixedSEW:8)Uv"]]>;
++defm smt_vmadotsu : RVVIMEDOT<[["vv", "v",
++    "(LFixedLog2LMUL:1)v(LFixedLog2LMUL:1)v(FixedSEW:8)v(FixedSEW:8)Uv"]]>;
++defm smt_vmadotus : RVVIMEDOT<[["vv", "v",
++    "(LFixedLog2LMUL:1)v(LFixedLog2LMUL:1)v(FixedSEW:8)Uv(FixedSEW:8)v"]]>;
+diff --git a/clang/include/clang/Sema/RISCVIntrinsicManager.h b/clang/include/clang/Sema/RISCVIntrinsicManager.h
+index 05d995b77c99..d1b44c3b1837 100644
+--- a/clang/include/clang/Sema/RISCVIntrinsicManager.h
++++ b/clang/include/clang/Sema/RISCVIntrinsicManager.h
+@@ -24,7 +24,7 @@ class Preprocessor;
+ namespace sema {
+ class RISCVIntrinsicManager {
+ public:
+-  enum class IntrinsicKind : uint8_t { RVV, SIFIVE_VECTOR, ANDES_VECTOR };
++  enum class IntrinsicKind : uint8_t { RVV, SIFIVE_VECTOR, ANDES_VECTOR, SPACEMIT_VECTOR };
+ 
+   virtual ~RISCVIntrinsicManager() = default;
+ 
+diff --git a/clang/include/clang/Sema/SemaRISCV.h b/clang/include/clang/Sema/SemaRISCV.h
+index 49ac1d01b2b9..2bdff695afb9 100644
+--- a/clang/include/clang/Sema/SemaRISCV.h
++++ b/clang/include/clang/Sema/SemaRISCV.h
+@@ -53,6 +53,8 @@ public:
+ 
+   /// Indicate RISC-V Andes vector builtin functions enabled or not.
+   bool DeclareAndesVectorBuiltins = false;
++ /// Indicate RISC-V SpacemiT vector builtin functions enabled or not.
++  bool DeclareSpacemitVectorBuiltins = false;
+ 
+   std::unique_ptr<sema::RISCVIntrinsicManager> IntrinsicManager;
+ 
+diff --git a/clang/lib/Basic/Targets/RISCV.cpp b/clang/lib/Basic/Targets/RISCV.cpp
+index 6afef3e2c7c4..2d6a3482ec11 100644
+--- a/clang/lib/Basic/Targets/RISCV.cpp
++++ b/clang/lib/Basic/Targets/RISCV.cpp
+@@ -271,14 +271,16 @@ static constexpr int NumRVVBuiltins =
+ static constexpr int NumRVVSiFiveBuiltins =
+     RISCVVector::FirstAndesBuiltin - RISCVVector::FirstSiFiveBuiltin;
+ static constexpr int NumRVVAndesBuiltins =
+-    RISCVVector::FirstTSBuiltin - RISCVVector::FirstAndesBuiltin;
++    RISCVVector::FirstSpacemitBuiltin - RISCVVector::FirstAndesBuiltin;
++static constexpr int NumRVVSpacemitBuiltins =
++    RISCVVector::FirstTSBuiltin - RISCVVector::FirstSpacemitBuiltin;
+ static constexpr int NumRISCVBuiltins =
+     RISCV::LastTSBuiltin - RISCVVector::FirstTSBuiltin;
+ static constexpr int NumBuiltins =
+     RISCV::LastTSBuiltin - Builtin::FirstTSBuiltin;
+ static_assert(NumBuiltins == (NumRVVBuiltins + NumRVVSiFiveBuiltins +
+-                              NumRVVAndesBuiltins + NumRISCVBuiltins));
+-
++                              NumRVVAndesBuiltins + NumRVVSpacemitBuiltins +
++                              NumRISCVBuiltins));
+ namespace RVV {
+ #define GET_RISCVV_BUILTIN_STR_TABLE
+ #include "clang/Basic/riscv_vector_builtins.inc"
+@@ -317,6 +319,17 @@ static constexpr std::array<Builtin::Info, NumRVVAndesBuiltins> BuiltinInfos =
+ #undef GET_RISCVV_BUILTIN_INFOS
+ };
+ } // namespace RVVAndes
++namespace RVVSpacemit {
++#define GET_RISCVV_BUILTIN_STR_TABLE
++#include "clang/Basic/riscv_spacemit_vector_builtins.inc"
++#undef GET_RISCVV_BUILTIN_STR_TABLE
++static constexpr std::array<Builtin::Info, NumRVVSpacemitBuiltins>
++    BuiltinInfos = {
++#define GET_RISCVV_BUILTIN_INFOS
++#include "clang/Basic/riscv_spacemit_vector_builtins.inc"
++#undef GET_RISCVV_BUILTIN_INFOS
++};
++} // namespace RVVSpacemit
+ 
+ #define GET_BUILTIN_STR_TABLE
+ #include "clang/Basic/BuiltinsRISCV.inc"
+@@ -335,6 +348,8 @@ RISCVTargetInfo::getTargetBuiltins() const {
+       {&RVV::BuiltinStrings, RVV::BuiltinInfos, "__builtin_rvv_"},
+       {&RVVSiFive::BuiltinStrings, RVVSiFive::BuiltinInfos, "__builtin_rvv_"},
+       {&RVVAndes::BuiltinStrings, RVVAndes::BuiltinInfos, "__builtin_rvv_"},
++      {&RVVSpacemit::BuiltinStrings, RVVSpacemit::BuiltinInfos,
++       "__builtin_rvv_"},
+       {&BuiltinStrings, BuiltinInfos},
+   };
+ }
+diff --git a/clang/lib/CodeGen/TargetBuiltins/RISCV.cpp b/clang/lib/CodeGen/TargetBuiltins/RISCV.cpp
+index a97f11223e6a..0a600a4c2e0d 100644
+--- a/clang/lib/CodeGen/TargetBuiltins/RISCV.cpp
++++ b/clang/lib/CodeGen/TargetBuiltins/RISCV.cpp
+@@ -1710,6 +1710,8 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
+ 
+     // Andes Vector builtins are handled from here.
+ #include "clang/Basic/riscv_andes_vector_builtin_cg.inc"
++    // SpacemiT Vector builtins are handled from here.
++#include "clang/Basic/riscv_spacemit_vector_builtin_cg.inc"
+   }
+ 
+   assert(ID != Intrinsic::not_intrinsic);
+diff --git a/clang/lib/Parse/ParsePragma.cpp b/clang/lib/Parse/ParsePragma.cpp
+index f58d2c70b7d9..9e76046cdb00 100644
+--- a/clang/lib/Parse/ParsePragma.cpp
++++ b/clang/lib/Parse/ParsePragma.cpp
+@@ -4294,6 +4294,7 @@ void PragmaExportHandler::HandlePragma(Preprocessor &PP,
+ // Handle '#pragma clang riscv intrinsic vector'.
+ //        '#pragma clang riscv intrinsic sifive_vector'.
+ //        '#pragma clang riscv intrinsic andes_vector'.
++//        '#pragma clang riscv intrinsic spacemit_vector'.
+ void PragmaRISCVHandler::HandlePragma(Preprocessor &PP,
+                                       PragmaIntroducer Introducer,
+                                       Token &FirstToken) {
+@@ -4310,10 +4311,10 @@ void PragmaRISCVHandler::HandlePragma(Preprocessor &PP,
+   PP.Lex(Tok);
+   II = Tok.getIdentifierInfo();
+   if (!II || !(II->isStr("vector") || II->isStr("sifive_vector") ||
+-               II->isStr("andes_vector"))) {
++               II->isStr("andes_vector") || II->isStr("spacemit_vector"))) {
+     PP.Diag(Tok.getLocation(), diag::warn_pragma_invalid_argument)
+         << PP.getSpelling(Tok) << "riscv" << /*Expected=*/true
+-        << "'vector', 'sifive_vector' or 'andes_vector'";
++        << "'vector', 'sifive_vector', 'andes_vector' or 'spacemit_vector'";
+     return;
+   }
+ 
+@@ -4330,4 +4331,6 @@ void PragmaRISCVHandler::HandlePragma(Preprocessor &PP,
+     Actions.RISCV().DeclareSiFiveVectorBuiltins = true;
+   else if (II->isStr("andes_vector"))
+     Actions.RISCV().DeclareAndesVectorBuiltins = true;
++  else if (II->isStr("spacemit_vector"))
++    Actions.RISCV().DeclareSpacemitVectorBuiltins = true;
+ }
+diff --git a/clang/lib/Sema/SemaLookup.cpp b/clang/lib/Sema/SemaLookup.cpp
+index 43129800e981..26939a4f8755 100644
+--- a/clang/lib/Sema/SemaLookup.cpp
++++ b/clang/lib/Sema/SemaLookup.cpp
+@@ -960,7 +960,8 @@ bool Sema::LookupBuiltin(LookupResult &R) {
+       }
+ 
+       if (RISCV().DeclareRVVBuiltins || RISCV().DeclareSiFiveVectorBuiltins ||
+-          RISCV().DeclareAndesVectorBuiltins) {
++          RISCV().DeclareAndesVectorBuiltins  ||
++          RISCV().DeclareSpacemitVectorBuiltins) {
+         if (!RISCV().IntrinsicManager)
+           RISCV().IntrinsicManager = CreateRISCVIntrinsicManager(*this);
+ 
+diff --git a/clang/lib/Sema/SemaRISCV.cpp b/clang/lib/Sema/SemaRISCV.cpp
+index 9647a7d91374..251bcf6cba8a 100644
+--- a/clang/lib/Sema/SemaRISCV.cpp
++++ b/clang/lib/Sema/SemaRISCV.cpp
+@@ -76,6 +76,11 @@ static const PrototypeDescriptor RVAndesVectorSignatureTable[] = {
+ #include "clang/Basic/riscv_andes_vector_builtin_sema.inc"
+ #undef DECL_SIGNATURE_TABLE
+ };
++static const PrototypeDescriptor RVSpacemitVectorSignatureTable[] = {
++#define DECL_SIGNATURE_TABLE
++#include "clang/Basic/riscv_spacemit_vector_builtin_sema.inc"
++#undef DECL_SIGNATURE_TABLE
++};
+ 
+ static const RVVIntrinsicRecord RVVIntrinsicRecords[] = {
+ #define DECL_INTRINSIC_RECORDS
+@@ -94,6 +99,11 @@ static const RVVIntrinsicRecord RVAndesVectorIntrinsicRecords[] = {
+ #include "clang/Basic/riscv_andes_vector_builtin_sema.inc"
+ #undef DECL_INTRINSIC_RECORDS
+ };
++static const RVVIntrinsicRecord RVSpacemitVectorIntrinsicRecords[] = {
++#define DECL_INTRINSIC_RECORDS
++#include "clang/Basic/riscv_spacemit_vector_builtin_sema.inc"
++#undef DECL_INTRINSIC_RECORDS
++};
+ 
+ // Get subsequence of signature table.
+ static ArrayRef<PrototypeDescriptor>
+@@ -105,6 +115,8 @@ ProtoSeq2ArrayRef(IntrinsicKind K, uint16_t Index, uint8_t Length) {
+     return ArrayRef(&RVSiFiveVectorSignatureTable[Index], Length);
+   case IntrinsicKind::ANDES_VECTOR:
+     return ArrayRef(&RVAndesVectorSignatureTable[Index], Length);
++  case IntrinsicKind::SPACEMIT_VECTOR:
++    return ArrayRef(&RVSpacemitVectorSignatureTable[Index], Length);
+   }
+   llvm_unreachable("Unhandled IntrinsicKind");
+ }
+@@ -202,6 +214,7 @@ private:
+   bool ConstructedRISCVVBuiltins;
+   bool ConstructedRISCVSiFiveVectorBuiltins;
+   bool ConstructedRISCVAndesVectorBuiltins;
++  bool ConstructedRISCVSpacemitVectorBuiltins;
+ 
+   // List of all RVV intrinsic.
+   std::vector<RVVIntrinsicDef> IntrinsicList;
+@@ -228,6 +241,7 @@ public:
+     ConstructedRISCVVBuiltins = false;
+     ConstructedRISCVSiFiveVectorBuiltins = false;
+     ConstructedRISCVAndesVectorBuiltins = false;
++    ConstructedRISCVSpacemitVectorBuiltins = false;
+   }
+ 
+   // Initialize IntrinsicList
+@@ -371,6 +385,12 @@ void RISCVIntrinsicManagerImpl::InitIntrinsicList() {
+     ConstructRVVIntrinsics(RVAndesVectorIntrinsicRecords,
+                            IntrinsicKind::ANDES_VECTOR);
+   }
++  if (S.RISCV().DeclareSpacemitVectorBuiltins &&
++      !ConstructedRISCVSpacemitVectorBuiltins) {
++    ConstructedRISCVSpacemitVectorBuiltins = true;
++    ConstructRVVIntrinsics(RVSpacemitVectorIntrinsicRecords,
++                           IntrinsicKind::SPACEMIT_VECTOR);
++  }
+ }
+ 
+ // Compute name and signatures for intrinsic with practical types.
+diff --git a/clang/lib/Serialization/ASTReader.cpp b/clang/lib/Serialization/ASTReader.cpp
+index c4c4b22f8509..6267392ab56a 100644
+--- a/clang/lib/Serialization/ASTReader.cpp
++++ b/clang/lib/Serialization/ASTReader.cpp
+@@ -9312,11 +9312,12 @@ void ASTReader::UpdateSema() {
+   }
+   SemaObj->CUDA().ForceHostDeviceDepth = ForceHostDeviceDepth;
+   if (!RISCVVecIntrinsicPragma.empty()) {
+-    assert(RISCVVecIntrinsicPragma.size() == 3 &&
++    assert(RISCVVecIntrinsicPragma.size() == 4 &&
+            "Wrong number of RISCVVecIntrinsicPragma");
+     SemaObj->RISCV().DeclareRVVBuiltins = RISCVVecIntrinsicPragma[0];
+     SemaObj->RISCV().DeclareSiFiveVectorBuiltins = RISCVVecIntrinsicPragma[1];
+     SemaObj->RISCV().DeclareAndesVectorBuiltins = RISCVVecIntrinsicPragma[2];
++    SemaObj->RISCV().DeclareSpacemitVectorBuiltins = RISCVVecIntrinsicPragma[3];
+   }
+ 
+   if (PragmaAlignPackCurrentValue) {
+diff --git a/clang/lib/Serialization/ASTWriter.cpp b/clang/lib/Serialization/ASTWriter.cpp
+index f34b2ff182bc..d7c065f0fb97 100644
+--- a/clang/lib/Serialization/ASTWriter.cpp
++++ b/clang/lib/Serialization/ASTWriter.cpp
+@@ -5309,10 +5309,11 @@ void ASTWriter::WriteModuleFileExtension(Sema &SemaRef,
+ void ASTWriter::WriteRISCVIntrinsicPragmas(Sema &SemaRef) {
+   RecordData Record;
+   // Need to update this when new intrinsic class is added.
+-  Record.push_back(/*size*/ 3);
++  Record.push_back(/*size*/ 4);
+   Record.push_back(SemaRef.RISCV().DeclareRVVBuiltins);
+   Record.push_back(SemaRef.RISCV().DeclareSiFiveVectorBuiltins);
+   Record.push_back(SemaRef.RISCV().DeclareAndesVectorBuiltins);
++  Record.push_back(SemaRef.RISCV().DeclareSpacemitVectorBuiltins);
+   Stream.EmitRecord(RISCV_VECTOR_INTRINSICS_PRAGMA, Record);
+ }
+ 
+diff --git a/clang/test/CodeGen/RISCV/rvv-intrinsics-spacemit/smt_vmadot.c b/clang/test/CodeGen/RISCV/rvv-intrinsics-spacemit/smt_vmadot.c
+new file mode 100644
+index 000000000000..b131e6629312
+--- /dev/null
++++ b/clang/test/CodeGen/RISCV/rvv-intrinsics-spacemit/smt_vmadot.c
+@@ -0,0 +1,96 @@
++// NOTE: Assertions have been autogenerated by utils/update_cc_test_checks.py UTC_ARGS: --version 6
++// REQUIRES: riscv-registered-target
++// RUN: %clang_cc1 -triple riscv64 -target-feature +v -target-feature +xsmtvdot \
++// RUN:   -emit-llvm %s -o - | opt -S -passes=mem2reg | \
++// RUN:   FileCheck --check-prefix=CHECK-RV64 %s
++
++#include <riscv_vector.h>
++#pragma clang riscv intrinsic spacemit_vector
++
++// CHECK-RV64-LABEL: define dso_local <vscale x 4 x i32> @test_smt_vmadot(
++// CHECK-RV64-SAME: <vscale x 4 x i32> [[VD:%.*]], <vscale x 8 x i8> [[VS1:%.*]], <vscale x 8 x i8> [[VS2:%.*]], i64 noundef [[VL:%.*]]) #[[ATTR0:[0-9]+]] {
++// CHECK-RV64-NEXT:  [[ENTRY:.*:]]
++// CHECK-RV64-NEXT:    [[VD_ADDR:%.*]] = alloca <vscale x 4 x i32>, align 4
++// CHECK-RV64-NEXT:    [[VS1_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VS2_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VL_ADDR:%.*]] = alloca i64, align 8
++// CHECK-RV64-NEXT:    store <vscale x 4 x i32> [[VD]], ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS1]], ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS2]], ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    store i64 [[VL]], ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP0:%.*]] = load <vscale x 4 x i32>, ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    [[TMP1:%.*]] = load <vscale x 8 x i8>, ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP2:%.*]] = load <vscale x 8 x i8>, ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP3:%.*]] = load i64, ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP4:%.*]] = call <vscale x 4 x i32> @llvm.riscv.smt.vmadot.nxv4i32.nxv8i8.nxv8i8.i64(<vscale x 4 x i32> [[TMP0]], <vscale x 8 x i8> [[TMP1]], <vscale x 8 x i8> [[TMP2]], i64 [[TMP3]], i64 3)
++// CHECK-RV64-NEXT:    ret <vscale x 4 x i32> [[TMP4]]
++//
++vint32m2_t test_smt_vmadot(vint32m2_t vd, vint8m1_t vs1, vint8m1_t vs2, size_t vl) {
++  return __riscv_smt_vmadot(vd, vs1, vs2, vl);
++}
++
++// CHECK-RV64-LABEL: define dso_local <vscale x 4 x i32> @test_smt_vmadotu(
++// CHECK-RV64-SAME: <vscale x 4 x i32> [[VD:%.*]], <vscale x 8 x i8> [[VS1:%.*]], <vscale x 8 x i8> [[VS2:%.*]], i64 noundef [[VL:%.*]]) #[[ATTR0]] {
++// CHECK-RV64-NEXT:  [[ENTRY:.*:]]
++// CHECK-RV64-NEXT:    [[VD_ADDR:%.*]] = alloca <vscale x 4 x i32>, align 4
++// CHECK-RV64-NEXT:    [[VS1_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VS2_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VL_ADDR:%.*]] = alloca i64, align 8
++// CHECK-RV64-NEXT:    store <vscale x 4 x i32> [[VD]], ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS1]], ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS2]], ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    store i64 [[VL]], ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP0:%.*]] = load <vscale x 4 x i32>, ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    [[TMP1:%.*]] = load <vscale x 8 x i8>, ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP2:%.*]] = load <vscale x 8 x i8>, ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP3:%.*]] = load i64, ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP4:%.*]] = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotu.nxv4i32.nxv8i8.nxv8i8.i64(<vscale x 4 x i32> [[TMP0]], <vscale x 8 x i8> [[TMP1]], <vscale x 8 x i8> [[TMP2]], i64 [[TMP3]], i64 3)
++// CHECK-RV64-NEXT:    ret <vscale x 4 x i32> [[TMP4]]
++//
++vint32m2_t test_smt_vmadotu(vint32m2_t vd, vuint8m1_t vs1, vuint8m1_t vs2, size_t vl) {
++  return __riscv_smt_vmadotu(vd, vs1, vs2, vl);
++}
++
++// CHECK-RV64-LABEL: define dso_local <vscale x 4 x i32> @test_smt_vmadotsu(
++// CHECK-RV64-SAME: <vscale x 4 x i32> [[VD:%.*]], <vscale x 8 x i8> [[VS1:%.*]], <vscale x 8 x i8> [[VS2:%.*]], i64 noundef [[VL:%.*]]) #[[ATTR0]] {
++// CHECK-RV64-NEXT:  [[ENTRY:.*:]]
++// CHECK-RV64-NEXT:    [[VD_ADDR:%.*]] = alloca <vscale x 4 x i32>, align 4
++// CHECK-RV64-NEXT:    [[VS1_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VS2_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VL_ADDR:%.*]] = alloca i64, align 8
++// CHECK-RV64-NEXT:    store <vscale x 4 x i32> [[VD]], ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS1]], ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS2]], ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    store i64 [[VL]], ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP0:%.*]] = load <vscale x 4 x i32>, ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    [[TMP1:%.*]] = load <vscale x 8 x i8>, ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP2:%.*]] = load <vscale x 8 x i8>, ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP3:%.*]] = load i64, ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP4:%.*]] = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotsu.nxv4i32.nxv8i8.nxv8i8.i64(<vscale x 4 x i32> [[TMP0]], <vscale x 8 x i8> [[TMP1]], <vscale x 8 x i8> [[TMP2]], i64 [[TMP3]], i64 3)
++// CHECK-RV64-NEXT:    ret <vscale x 4 x i32> [[TMP4]]
++//
++vint32m2_t test_smt_vmadotsu(vint32m2_t vd, vint8m1_t vs1, vuint8m1_t vs2, size_t vl) {
++  return __riscv_smt_vmadotsu(vd, vs1, vs2, vl);
++}
++
++// CHECK-RV64-LABEL: define dso_local <vscale x 4 x i32> @test_smt_vmadotus(
++// CHECK-RV64-SAME: <vscale x 4 x i32> [[VD:%.*]], <vscale x 8 x i8> [[VS1:%.*]], <vscale x 8 x i8> [[VS2:%.*]], i64 noundef [[VL:%.*]]) #[[ATTR0]] {
++// CHECK-RV64-NEXT:  [[ENTRY:.*:]]
++// CHECK-RV64-NEXT:    [[VD_ADDR:%.*]] = alloca <vscale x 4 x i32>, align 4
++// CHECK-RV64-NEXT:    [[VS1_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VS2_ADDR:%.*]] = alloca <vscale x 8 x i8>, align 1
++// CHECK-RV64-NEXT:    [[VL_ADDR:%.*]] = alloca i64, align 8
++// CHECK-RV64-NEXT:    store <vscale x 4 x i32> [[VD]], ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS1]], ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    store <vscale x 8 x i8> [[VS2]], ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    store i64 [[VL]], ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP0:%.*]] = load <vscale x 4 x i32>, ptr [[VD_ADDR]], align 4
++// CHECK-RV64-NEXT:    [[TMP1:%.*]] = load <vscale x 8 x i8>, ptr [[VS1_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP2:%.*]] = load <vscale x 8 x i8>, ptr [[VS2_ADDR]], align 1
++// CHECK-RV64-NEXT:    [[TMP3:%.*]] = load i64, ptr [[VL_ADDR]], align 8
++// CHECK-RV64-NEXT:    [[TMP4:%.*]] = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotus.nxv4i32.nxv8i8.nxv8i8.i64(<vscale x 4 x i32> [[TMP0]], <vscale x 8 x i8> [[TMP1]], <vscale x 8 x i8> [[TMP2]], i64 [[TMP3]], i64 3)
++// CHECK-RV64-NEXT:    ret <vscale x 4 x i32> [[TMP4]]
++//
++vint32m2_t test_smt_vmadotus(vint32m2_t vd, vuint8m1_t vs1, vint8m1_t vs2, size_t vl) {
++  return __riscv_smt_vmadotus(vd, vs1, vs2, vl);
++}
+diff --git a/clang/utils/TableGen/TableGen.cpp b/clang/utils/TableGen/TableGen.cpp
+index 46e05f220790..8f90dc69f123 100644
+--- a/clang/utils/TableGen/TableGen.cpp
++++ b/clang/utils/TableGen/TableGen.cpp
+@@ -119,6 +119,9 @@ enum ActionType {
+   GenRISCVAndesVectorBuiltins,
+   GenRISCVAndesVectorBuiltinCG,
+   GenRISCVAndesVectorBuiltinSema,
++  GenRISCVSpacemitVectorBuiltins,
++  GenRISCVSpacemitVectorBuiltinCG,
++  GenRISCVSpacemitVectorBuiltinSema,
+   GenHLSLAliasIntrinsics,
+   GenHLSLInlineIntrinsics,
+   GenAttrDocs,
+@@ -353,6 +356,15 @@ cl::opt<ActionType> Action(
+         clEnumValN(GenRISCVAndesVectorBuiltinSema,
+                    "gen-riscv-andes-vector-builtin-sema",
+                    "Generate riscv_andes_vector_builtin_sema.inc for clang"),
++        clEnumValN(GenRISCVSpacemitVectorBuiltins,
++                   "gen-riscv-spacemit-vector-builtins",
++                   "Generate riscv_spacemit_vector_builtins.inc for clang"),
++        clEnumValN(GenRISCVSpacemitVectorBuiltinCG,
++                   "gen-riscv-spacemit-vector-builtin-codegen",
++                   "Generate riscv_spacemit_vector_builtin_cg.inc for clang"),
++        clEnumValN(GenRISCVSpacemitVectorBuiltinSema,
++                   "gen-riscv-spacemit-vector-builtin-sema",
++                   "Generate riscv_spacemit_vector_builtin_sema.inc for clang"),
+         clEnumValN(GenHLSLAliasIntrinsics, "gen-hlsl-alias-intrinsics",
+                    "Generate HLSL alias intrinsic overloads for "
+                    "hlsl_alias_intrinsics.h"),
+@@ -675,6 +687,15 @@ bool ClangTableGenMain(raw_ostream &OS, const RecordKeeper &Records) {
+   case GenHLSLAliasIntrinsics:
+     EmitHLSLAliasIntrinsics(Records, OS);
+     break;
++  case GenRISCVSpacemitVectorBuiltins:
++    EmitRVVBuiltins(Records, OS);
++    break;
++  case GenRISCVSpacemitVectorBuiltinCG:
++    EmitRVVBuiltinCG(Records, OS);
++    break;
++  case GenRISCVSpacemitVectorBuiltinSema:
++    EmitRVVBuiltinSema(Records, OS);
++    break;
+   case GenHLSLInlineIntrinsics:
+     EmitHLSLInlineIntrinsics(Records, OS);
+     break;
+diff --git a/llvm/include/llvm/IR/IntrinsicsRISCV.td b/llvm/include/llvm/IR/IntrinsicsRISCV.td
+index 517d0e51ec40..111faa35b11b 100644
+--- a/llvm/include/llvm/IR/IntrinsicsRISCV.td
++++ b/llvm/include/llvm/IR/IntrinsicsRISCV.td
+@@ -2161,4 +2161,5 @@ include "llvm/IR/IntrinsicsRISCVXTHead.td"
+ include "llvm/IR/IntrinsicsRISCVXsf.td"
+ include "llvm/IR/IntrinsicsRISCVXCV.td"
+ include "llvm/IR/IntrinsicsRISCVXAndes.td"
++include "llvm/IR/IntrinsicsRISCVXSpacemit.td"
+ include "llvm/IR/IntrinsicsRISCVXMIPS.td"
+diff --git a/llvm/include/llvm/IR/IntrinsicsRISCVXSpacemit.td b/llvm/include/llvm/IR/IntrinsicsRISCVXSpacemit.td
+new file mode 100644
+index 000000000000..e824edea59aa
+--- /dev/null
++++ b/llvm/include/llvm/IR/IntrinsicsRISCVXSpacemit.td
+@@ -0,0 +1,19 @@
++//===- IntrinsicsRISCVXSpacemit.td - SpacemiT intrinsics -*- tablegen -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// This file defines all of the SpacemiT-specific intrinsics.
++//
++//===----------------------------------------------------------------------===//
++
++let TargetPrefix = "riscv" in {
++  // SpacemiT Vector Dot Product Extension (XSMTVDot)
++  defm smt_vmadot   : RISCVTernaryWide;
++  defm smt_vmadotu  : RISCVTernaryWide;
++  defm smt_vmadotsu : RISCVTernaryWide;
++  defm smt_vmadotus : RISCVTernaryWide;
++} // TargetPrefix = "riscv"
+diff --git a/llvm/lib/Target/RISCV/RISCVFeatures.td b/llvm/lib/Target/RISCV/RISCVFeatures.td
+index 2abc78ff874c..47e2e8bc817d 100644
+--- a/llvm/lib/Target/RISCV/RISCVFeatures.td
++++ b/llvm/lib/Target/RISCV/RISCVFeatures.td
+@@ -1566,6 +1566,17 @@ def FeatureVendorXSfsclic
+     : RISCVExperimentalExtension<0, 1,
+                                  "SiFive CLIC Supervisor-mode CSRs">;
+ 
++// SpacemiT Extensions
++
++def FeatureVendorXSpacemitIme
++    : RISCVExtension<1, 0,
++                      "SpacemiT Integer Matrix Extension (IME)",
++                      [FeatureStdExtZve32x]>;
++def HasVendorXSpacemitIme
++    : Predicate<"Subtarget->hasVendorXSpacemitIme()">,
++      AssemblerPredicate<(all_of FeatureVendorXSpacemitIme),
++                         "'XSpacemitIme' (SpacemiT Integer Matrix Extension)">;
++
+ // Core-V Extensions
+ 
+ def FeatureVendorXCVelw
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfoXSpacemiT.td b/llvm/lib/Target/RISCV/RISCVInstrInfoXSpacemiT.td
+index 2e51186360ae..3760bf64a69a 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrInfoXSpacemiT.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfoXSpacemiT.td
+@@ -109,3 +109,37 @@ let DecoderNamespace = "XSMT" in {
+     }
+   }
+ } // DecoderNamespace = "XSMT"
++
++//===----------------------------------------------------------------------===//
++// Patterns: connect the Clang/LLVM-IR intrinsics (int_riscv_smt_vmadot*) to
++// the real hardware instructions defined above (SMT_VMADOT*).
++//
++// SMT_VMADOT* take a fixed LMUL=2 accumulator (VRM2, e.g. vint32m2_t) and two
++// LMUL=1 operands (VR, e.g. vint8m1_t) -- this matches VLEN=256, SEW=8,
++// vl*SEW=256 exactly as required by Phase 1 (see task spec). Because the
++// real instructions use fixed register classes (not LMUL-parameterized
++// pseudo-multiclasses like standard RVV ops), we pattern-match directly
++// instead of going through the VPseudoTernaryW_VV/VPatTernaryW_VV machinery.
++//===----------------------------------------------------------------------===//
++let Predicates = [HasVendorXSMTVDot, IsRV64] in {
++  def : Pat<(vint32m2_t (int_riscv_smt_vmadot (vint32m2_t VRM2:$vd),
++                                              (vint8m1_t VR:$vs1),
++                                              (vint8m1_t VR:$vs2),
++                                              (XLenVT srcvalue), (XLenVT srcvalue))),
++            (SMT_VMADOT VRM2:$vd, VR:$vs1, VR:$vs2)>;
++  def : Pat<(vint32m2_t (int_riscv_smt_vmadotu (vint32m2_t VRM2:$vd),
++                                               (vint8m1_t VR:$vs1),
++                                               (vint8m1_t VR:$vs2),
++                                               (XLenVT srcvalue), (XLenVT srcvalue))),
++            (SMT_VMADOTU VRM2:$vd, VR:$vs1, VR:$vs2)>;
++  def : Pat<(vint32m2_t (int_riscv_smt_vmadotsu (vint32m2_t VRM2:$vd),
++                                                (vint8m1_t VR:$vs1),
++                                                (vint8m1_t VR:$vs2),
++                                                (XLenVT srcvalue), (XLenVT srcvalue))),
++            (SMT_VMADOTSU VRM2:$vd, VR:$vs1, VR:$vs2)>;
++  def : Pat<(vint32m2_t (int_riscv_smt_vmadotus (vint32m2_t VRM2:$vd),
++                                                (vint8m1_t VR:$vs1),
++                                                (vint8m1_t VR:$vs2),
++                                                (XLenVT srcvalue), (XLenVT srcvalue))),
++            (SMT_VMADOTUS VRM2:$vd, VR:$vs1, VR:$vs2)>;
++}
+diff --git a/llvm/test/CodeGen/RISCV/rvv/smt-vmadot.ll b/llvm/test/CodeGen/RISCV/rvv/smt-vmadot.ll
+new file mode 100644
+index 000000000000..24b6b3ae9d7d
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/rvv/smt-vmadot.ll
+@@ -0,0 +1,66 @@
++; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl256b,+xsmtvdot \
++; RUN:   -verify-machineinstrs < %s | FileCheck %s
++
++declare <vscale x 4 x i32> @llvm.riscv.smt.vmadot.nxv4i32.nxv8i8.nxv8i8.i64(
++  <vscale x 4 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64, i64)
++
++define <vscale x 4 x i32> @smt_vmadot(<vscale x 4 x i32> %vd,
++                                      <vscale x 8 x i8> %vs1,
++                                      <vscale x 8 x i8> %vs2,
++                                      i64 %vl) {
++; CHECK-LABEL: smt_vmadot:
++; CHECK: smt.vmadot
++entry:
++  %r = call <vscale x 4 x i32> @llvm.riscv.smt.vmadot.nxv4i32.nxv8i8.nxv8i8.i64(
++        <vscale x 4 x i32> %vd, <vscale x 8 x i8> %vs1,
++        <vscale x 8 x i8> %vs2, i64 %vl, i64 3)
++  ret <vscale x 4 x i32> %r
++}
++
++declare <vscale x 4 x i32> @llvm.riscv.smt.vmadotu.nxv4i32.nxv8i8.nxv8i8.i64(
++  <vscale x 4 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64, i64)
++
++define <vscale x 4 x i32> @smt_vmadotu(<vscale x 4 x i32> %vd,
++                                       <vscale x 8 x i8> %vs1,
++                                       <vscale x 8 x i8> %vs2,
++                                       i64 %vl) {
++; CHECK-LABEL: smt_vmadotu:
++; CHECK: smt.vmadotu
++entry:
++  %r = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotu.nxv4i32.nxv8i8.nxv8i8.i64(
++        <vscale x 4 x i32> %vd, <vscale x 8 x i8> %vs1,
++        <vscale x 8 x i8> %vs2, i64 %vl, i64 3)
++  ret <vscale x 4 x i32> %r
++}
++
++declare <vscale x 4 x i32> @llvm.riscv.smt.vmadotsu.nxv4i32.nxv8i8.nxv8i8.i64(
++  <vscale x 4 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64, i64)
++
++define <vscale x 4 x i32> @smt_vmadotsu(<vscale x 4 x i32> %vd,
++                                        <vscale x 8 x i8> %vs1,
++                                        <vscale x 8 x i8> %vs2,
++                                        i64 %vl) {
++; CHECK-LABEL: smt_vmadotsu:
++; CHECK: smt.vmadotsu
++entry:
++  %r = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotsu.nxv4i32.nxv8i8.nxv8i8.i64(
++        <vscale x 4 x i32> %vd, <vscale x 8 x i8> %vs1,
++        <vscale x 8 x i8> %vs2, i64 %vl, i64 3)
++  ret <vscale x 4 x i32> %r
++}
++
++declare <vscale x 4 x i32> @llvm.riscv.smt.vmadotus.nxv4i32.nxv8i8.nxv8i8.i64(
++  <vscale x 4 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64, i64)
++
++define <vscale x 4 x i32> @smt_vmadotus(<vscale x 4 x i32> %vd,
++                                        <vscale x 8 x i8> %vs1,
++                                        <vscale x 8 x i8> %vs2,
++                                        i64 %vl) {
++; CHECK-LABEL: smt_vmadotus:
++; CHECK: smt.vmadotus
++entry:
++  %r = call <vscale x 4 x i32> @llvm.riscv.smt.vmadotus.nxv4i32.nxv8i8.nxv8i8.i64(
++        <vscale x 4 x i32> %vd, <vscale x 8 x i8> %vs1,
++        <vscale x 8 x i8> %vs2, i64 %vl, i64 3)
++  ret <vscale x 4 x i32> %r
++}
+diff --git a/llvm/test/MC/RISCV/xsmtvdot-valid.s b/llvm/test/MC/RISCV/xsmtvdot-valid.s
+index 4f402236099d..10de44785241 100644
+--- a/llvm/test/MC/RISCV/xsmtvdot-valid.s
++++ b/llvm/test/MC/RISCV/xsmtvdot-valid.s
+@@ -1,94 +1,21 @@
+-# RUN: llvm-mc -triple=riscv64 -show-encoding -mcpu=spacemit-x60 %s \
+-# RUN:        | FileCheck %s --check-prefixes=CHECK-ENC
+-
+-# RUN: not llvm-mc -triple=riscv64 -show-encoding %s 2>&1 \
+-# RUN:        | FileCheck %s --check-prefix=CHECK-ERROR
+-
+-# RUN: llvm-mc -triple=riscv64 -filetype=obj -mcpu=spacemit-x60 %s \
+-# RUN:        | llvm-objdump -d  --mcpu=spacemit-x60 - \
+-# RUN:        | FileCheck %s --check-prefix=CHECK-INST
+-
+-
+-
+-// CHECK-ENC:   encoding: [0x2b,0x38,0x80,0xe2]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot  v16, v0, v8
+-smt.vmadot   v16, v0, v8
+-
+-// CHECK-ENC:   encoding: [0x2b,0x89,0x90,0xe2]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadotu	v18, v1, v9 
+-smt.vmadotu  v18, v1, v9
+-
+-// CHECK-ENC:   encoding: [0x2b,0x2a,0xa1,0xe2]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadotsu	v20, v2, v10
+-smt.vmadotsu v20, v2, v10
+-
+-// CHECK-ENC:   encoding: [0x2b,0x9b,0xb1,0xe2]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadotus	v22, v3, v11
+-smt.vmadotus v22, v3, v11
+-
+-
+-// CHECK-ENC:   encoding: [0x2b,0x3c,0xc8,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot1	v24, v16, v12
+-smt.vmadot1   v24, v16, v12
+-
+-
+-// CHECK-ENC:   encoding: [0x2b,0x0d,0xd9,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot1u	v26, v18, v13
+-smt.vmadot1u  v26, v18, v13
+-
+-// CHECK-ENC:   encoding: [0x2b,0x2e,0xea,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot1su	v28, v20, v14
+-smt.vmadot1su v28, v20, v14
+-
+-// CHECK-ENC:   encoding: [0x2b,0x1f,0xfb,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot1us	v30, v22, v15
+-smt.vmadot1us v30, v22, v15
+-
+-// CHECK-ENC:   encoding: [0x2b,0x70,0x4c,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot2	v0, v24, v4
+-smt.vmadot2   v0, v24, v4
+-
+-// CHECK-ENC:   encoding: [0x2b,0x41,0x5d,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot2u	v2, v26, v5
+-smt.vmadot2u  v2, v26, v5
+-
+-// CHECK-ENC:   encoding: [0x2b,0x62,0x6e,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot2su	v4, v28, v6
+-smt.vmadot2su v4, v28, v6
+-
+-// CHECK-ENC:   encoding: [0x2b,0x53,0x8f,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot2us	v6, v30, v8
+-smt.vmadot2us v6, v30, v8
+-
+-// CHECK-ENC:   encoding: [0x2b,0xb1,0x80,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot3	v2, v0, v8 
+-smt.vmadot3   v2, v0, v8
+-
+-// CHECK-ENC:   encoding: [0x2b,0x85,0x91,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot3u	v10, v2, v9
+-smt.vmadot3u  v10, v2, v9
+-
+-
+-// CHECK-ENC:   encoding: [0x2b,0xa6,0xa2,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST:  smt.vmadot3su	v12, v4, v10
+-smt.vmadot3su v12, v4, v10
+-
+-// CHECK-ENC:   encoding: [0x2b,0x97,0xb3,0xe6]
+-// CHECK-ERROR: instruction requires the following: 'XSMTVDot' (SpacemiT Vector Dot Product Extension){{$}}
+-// CHECK-INST: smt.vmadot3us	v14, v6, v11
+-smt.vmadot3us v14, v6, v11
++# RUN: llvm-mc -triple=riscv64 -mattr=+xsmtvdot -show-encoding < %s \
++# RUN:   | FileCheck --check-prefix=CHECK-ASM %s
++# RUN: llvm-mc -triple=riscv64 -mattr=+xsmtvdot -filetype=obj < %s \
++# RUN:   | llvm-objdump --mattr=+xsmtvdot -d - \
++# RUN:   | FileCheck --check-prefix=CHECK-OBJ %s
++
++# CHECK-ASM: smt.vmadot
++# CHECK-OBJ: smt.vmadot
++smt.vmadot v8, v10, v11
++
++# CHECK-ASM: smt.vmadotu
++# CHECK-OBJ: smt.vmadotu
++smt.vmadotu v8, v10, v11
++
++# CHECK-ASM: smt.vmadotsu
++# CHECK-OBJ: smt.vmadotsu
++smt.vmadotsu v8, v10, v11
++
++# CHECK-ASM: smt.vmadotus
++# CHECK-OBJ: smt.vmadotus
++smt.vmadotus v8, v10, v11
