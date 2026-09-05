@@ -36,7 +36,6 @@ at VLEN 256.
 
     test/  smt_vmadot.c                  builtin to IR (lit test)
            smt-vmadot.ll                 IR to assembly (lit test)
-           xsmtvdot-valid.s              assembler round trip (lit test)
            smt_validate.c                hardware validation program
 
     phase1-changes.patch                 changes to existing LLVM files
@@ -54,10 +53,10 @@ at VLEN 256.
 
     build/bin/llvm-lit -v \
       clang/test/CodeGen/RISCV/rvv-intrinsics-spacemit/smt_vmadot.c \
-      llvm/test/CodeGen/RISCV/rvv/smt-vmadot.ll \
-      llvm/test/MC/RISCV/xsmtvdot-valid.s
+      llvm/test/CodeGen/RISCV/rvv/smt-vmadot.ll
 
-All three pass.
+
+Both pass. The MC round-trip test already exists upstream (llvm/test/MC/RISCV/xsmtvdot-valid.s) and also passes.
 
 ## Hardware validation
 
